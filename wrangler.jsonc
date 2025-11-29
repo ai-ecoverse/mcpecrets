@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mcpecrets",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Durable Objects - needed for MCP state management
+  "migrations": [
+    {
+      "new_sqlite_classes": ["MCPSecrets"],
+      "tag": "v1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "MCPSecrets",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+
+  // KV namespace for OAuth state storage
+  // Create with: wrangler kv namespace create "OAUTH_KV"
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "<replace-with-your-kv-id>"
+    }
+  ],
+
+  // Enable observability
+  "observability": {
+    "enabled": true
+  },
+
+  // Local development port
+  "dev": {
+    "port": 8788
+  }
+}
