@@ -51,10 +51,9 @@ export class MCPSecrets extends McpAgent<Env, Record<string, never>, Props> {
 }
 
 export default new OAuthProvider({
-	// MCP endpoints - supporting both SSE (legacy) and Streamable-HTTP (recommended)
+	// MCP endpoint using Streamable-HTTP protocol
 	apiHandlers: {
-		"/sse": MCPSecrets.serveSSE("/sse"), // Legacy SSE protocol
-		"/mcp": MCPSecrets.serve("/mcp"), // Streamable-HTTP protocol (recommended)
+		"/mcp": MCPSecrets.serve("/mcp"),
 	},
 	// OAuth endpoints
 	authorizeEndpoint: "/authorize",

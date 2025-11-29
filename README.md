@@ -4,7 +4,7 @@ A Cloudflare Worker implementing the [Model Context Protocol (MCP)](https://mode
 
 ## Features
 
-- **Remote MCP Server**: Implements the latest MCP specification with both SSE (legacy) and Streamable-HTTP transport
+- **Remote MCP Server**: Implements the latest MCP specification with Streamable-HTTP transport
 - **OAuth 2.1 with PKCE**: Full OAuth 2.1 support with dynamic client registration
 - **GitHub Authentication**: Users authenticate with their GitHub account
 - **Secure by Default**: CSRF protection, state validation, and secure cookie handling
@@ -117,15 +117,14 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 
 Use the MCP connection type with URL:
 ```
-https://mcpecrets.<your-subdomain>.workers.dev/sse
+https://mcpecrets.<your-subdomain>.workers.dev/mcp
 ```
 
 ## API Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `/mcp` | Streamable-HTTP MCP endpoint (recommended) |
-| `/sse` | SSE MCP endpoint (legacy) |
+| `/mcp` | Streamable-HTTP MCP endpoint |
 | `/authorize` | OAuth authorization endpoint |
 | `/token` | OAuth token endpoint |
 | `/register` | OAuth dynamic client registration |
