@@ -3,7 +3,7 @@
 declare namespace Cloudflare {
 	interface Env {
 		// KV namespace for OAuth state storage
-		OAUTH_KV: KVNamespace;
+		MCPECRETS_KV: KVNamespace;
 
 		// GitHub OAuth credentials
 		GITHUB_CLIENT_ID: string;

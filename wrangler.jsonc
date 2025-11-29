@@ -22,10 +22,10 @@
   },
 
   // KV namespace for OAuth state storage
-  // Create with: wrangler kv namespace create "OAUTH_KV"
+  // Create with: wrangler kv namespace create "MCPECRETS_KV"
   "kv_namespaces": [
     {
-      "binding": "OAUTH_KV",
+      "binding": "MCPECRETS_KV",
       "id": "<replace-with-your-kv-id>"
     }
   ],
