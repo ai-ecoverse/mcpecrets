@@ -26,9 +26,12 @@
   "kv_namespaces": [
     {
       "binding": "MCPECRETS_KV",
-      "id": "<replace-with-your-kv-id>"
+      "id": "b4b342f3e7444c0ba8d2b1ba1505b05a"
     }
   ],
+
+  // Account ID
+  "account_id": "155ec15a52a18a14801e04b019da5e5a",
 
   // Enable observability
   "observability": {
