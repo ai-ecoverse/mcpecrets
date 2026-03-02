@@ -70,6 +70,15 @@ web_modules/
 .env.*
 !.env.example
 
+# Cloudflare Workers local dev secrets
+.dev.vars
+
+# Wrangler generated types (regenerated via `npm run types`)
+worker-configuration.d.ts
+
+# Wrangler build artifacts
+.wrangler/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
