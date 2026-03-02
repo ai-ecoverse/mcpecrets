@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import nacl from "tweetnacl";
 import naclUtil from "tweetnacl-util";
+import { blake2b } from "blakejs";
 import { generateWorkflowYaml } from "./workflow-template";
 
 // ---------------------------------------------------------------------------
@@ -14,7 +15,7 @@ import { generateWorkflowYaml } from "./workflow-template";
  * GitHub Actions Secrets API (libsodium crypto_box_seal).
  *
  * Format: ephemeral_pk (32) || crypto_box(msg, nonce, recipient_pk, eph_sk)
- * Nonce is derived as first 24 bytes of SHA-512(eph_pk || recipient_pk).
+ * Nonce is derived using BLAKE2b(eph_pk || recipient_pk, outputLength=24).
  */
 function sealedBoxForGitHub(
   message: Uint8Array,
@@ -27,7 +28,7 @@ function sealedBoxForGitHub(
   );
   nonceInput.set(ephemeralKeyPair.publicKey);
   nonceInput.set(recipientPublicKey, ephemeralKeyPair.publicKey.length);
-  const nonce = nacl.hash(nonceInput).slice(0, nacl.box.nonceLength);
+  const nonce = blake2b(nonceInput, undefined, nacl.box.nonceLength);
 
   const encrypted = nacl.box(
     message,
