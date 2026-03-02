@@ -7,8 +7,9 @@
  *     then triggers a GitHub Actions workflow.
  *  2. The workflow encrypts the secret and POSTs to `POST /api/callback/{token}`
  *     with body `{ encrypted: "<base64>" }`.
- *  3. This handler validates the token, stores the encrypted payload, and marks it ready.
- *  4. The `get_secret` tool polls KV for `status: "ready"`, then decrypts.
+ *  3. This handler validates the token, writes the encrypted payload to a
+ *     separate key (`callback-response:{token}`), and deletes the original key.
+ *  4. The `get_secret` tool polls `callback-response:{token}` for the payload, then decrypts.
  */
 
 interface CallbackKVEntry {
@@ -61,18 +62,20 @@ export async function handleSecretCallback(
     return new Response("Missing or invalid 'encrypted' field", { status: 400 });
   }
 
-  // Update the KV entry: mark as ready and store the encrypted payload.
-  // Keep the same TTL (60s from original creation) — use a fresh 60s TTL
-  // since the get_secret tool is actively polling.
-  const updated: CallbackKVEntry = {
-    privateKey: stored.privateKey,
-    status: "ready",
-    encrypted: body.encrypted,
-  };
+  // Write the encrypted payload to a SEPARATE key so the polling loop
+  // (running inside the Durable Object) never hits a stale KV cache.
+  // The original `callback:{token}` was cached with status "pending";
+  // `callback-response:{token}` has never been read, so the first GET
+  // will hit KV's authoritative store.
+  const responseKey = `callback-response:${token}`;
+  await env.OAUTH_KV.put(
+    responseKey,
+    JSON.stringify({ encrypted: body.encrypted }),
+    { expirationTtl: 60 },
+  );
 
-  await env.OAUTH_KV.put(kvKey, JSON.stringify(updated), {
-    expirationTtl: 60,
-  });
+  // Delete the original key to prevent replay
+  await env.OAUTH_KV.delete(kvKey);
 
   return new Response("OK", { status: 200 });
 }

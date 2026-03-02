@@ -351,26 +351,26 @@ export function registerTools(ctx: ToolContext) {
         },
       });
 
-      // Poll KV for the encrypted response (max 45 seconds)
+      // Poll a SEPARATE KV key for the encrypted response (max 45 seconds).
+      // The callback handler writes to `callback-response:{token}` instead of
+      // updating the original key. Since this key has never been read before,
+      // there is no stale KV cache to contend with.
+      const responseKey = `callback-response:${callbackToken}`;
       let encryptedValue: string | null = null;
       for (let i = 0; i < 45; i++) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
 
-        const stored = await ctx.env.OAUTH_KV.get(kvKey);
-        if (!stored) break; // expired
-
-        const data = JSON.parse(stored) as {
-          status: string;
-          encrypted?: string;
-        };
-        if (data.status === "ready" && data.encrypted) {
+        const stored = await ctx.env.OAUTH_KV.get(responseKey);
+        if (stored) {
+          const data = JSON.parse(stored) as { encrypted: string };
           encryptedValue = data.encrypted;
           break;
         }
       }
 
-      // Clean up
+      // Clean up both keys
       await ctx.env.OAUTH_KV.delete(kvKey);
+      await ctx.env.OAUTH_KV.delete(responseKey);
 
       if (!encryptedValue) {
         return {
