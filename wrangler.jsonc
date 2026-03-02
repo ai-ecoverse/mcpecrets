@@ -9,7 +9,7 @@
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "PLACEHOLDER_KV_ID"
+      "id": "8d90d7f0850e4e75985dd5a5b76ddb20"
     }
   ],
 
@@ -35,6 +35,6 @@
   // - GITHUB_CLIENT_SECRET
   // WORKER_URL should be set to the deployed worker URL (e.g. https://mcpecrets.<account>.workers.dev)
   "vars": {
-    "WORKER_URL": "https://mcpecrets.example.workers.dev"
+    "WORKER_URL": "https://mcpecrets.minivelos.workers.dev"
   }
 }
