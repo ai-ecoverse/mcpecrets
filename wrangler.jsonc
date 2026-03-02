@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mcpecrets",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-14",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // KV namespace for OAuth state and temporary callback tokens
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "PLACEHOLDER_KV_ID"
+    }
+  ],
+
+  // Durable Object for MCP agent sessions
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MCP_AGENT",
+        "class_name": "McpAgentDO"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["McpAgentDO"]
+    }
+  ],
+
+  // Secrets (set via `wrangler secret put`):
+  // - GITHUB_CLIENT_ID
+  // - GITHUB_CLIENT_SECRET
+  // WORKER_URL should be set to the deployed worker URL (e.g. https://mcpecrets.<account>.workers.dev)
+  "vars": {
+    "WORKER_URL": "https://mcpecrets.example.workers.dev"
+  }
+}
