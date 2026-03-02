@@ -154,6 +154,11 @@ export type ToolContext = {
   };
   server: McpServer;
   workerUrl: string;
+  pendingCallbacks: Map<
+    string,
+    { resolve: (encrypted: string) => void; reject: (err: Error) => void }
+  >;
+  doId: string;
 };
 
 /**
@@ -320,19 +325,22 @@ export function registerTools(ctx: ToolContext) {
       // Generate a one-time callback token
       const callbackToken = crypto.randomUUID();
 
-      // Store the private key in KV with 60s TTL.
-      // The callback endpoint (src/callback.ts) validates the token and
-      // updates status to "ready" with the encrypted payload.
+      // Store the DO ID in KV so the callback handler can route the
+      // encrypted payload to this Durable Object instance.
       const kvKey = `callback:${callbackToken}`;
-      await ctx.env.OAUTH_KV.put(
-        kvKey,
-        JSON.stringify({
-          privateKey: naclUtil.encodeBase64(ephemeralKeyPair.secretKey),
-          publicKey: publicKeyB64,
-          status: "pending",
-        }),
-        { expirationTtl: 60 },
-      );
+      await ctx.env.OAUTH_KV.put(kvKey, ctx.doId, { expirationTtl: 60 });
+
+      // Create a Promise that resolves when the DO receives the callback
+      const encryptedPromise = new Promise<string>((resolve, reject) => {
+        ctx.pendingCallbacks.set(callbackToken, { resolve, reject });
+        // Auto-reject after 45 seconds
+        setTimeout(() => {
+          if (ctx.pendingCallbacks.has(callbackToken)) {
+            ctx.pendingCallbacks.delete(callbackToken);
+            reject(new Error("timeout"));
+          }
+        }, 45000);
+      });
 
       // Callback URL matches the route in src/callback.ts: /api/callback/{token}
       const callbackUrl = `${ctx.workerUrl}/api/callback/${callbackToken}`;
@@ -351,26 +359,16 @@ export function registerTools(ctx: ToolContext) {
         },
       });
 
-      // Poll a SEPARATE KV key for the encrypted response (max 45 seconds).
-      // The callback handler writes to `callback-response:{token}` instead of
-      // updating the original key. Since this key has never been read before,
-      // there is no stale KV cache to contend with.
-      const responseKey = `callback-response:${callbackToken}`;
+      // Wait for the callback to arrive via the DO's fetch handler
       let encryptedValue: string | null = null;
-      for (let i = 0; i < 45; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        const stored = await ctx.env.OAUTH_KV.get(responseKey);
-        if (stored) {
-          const data = JSON.parse(stored) as { encrypted: string };
-          encryptedValue = data.encrypted;
-          break;
-        }
+      try {
+        encryptedValue = await encryptedPromise;
+      } catch {
+        // timeout or other error
       }
 
-      // Clean up both keys
+      // Clean up the routing key
       await ctx.env.OAUTH_KV.delete(kvKey);
-      await ctx.env.OAUTH_KV.delete(responseKey);
 
       if (!encryptedValue) {
         return {

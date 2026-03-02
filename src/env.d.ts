@@ -4,4 +4,5 @@ interface Env {
   GITHUB_CLIENT_SECRET: string;
   WORKER_URL: string;
   OAUTH_KV: KVNamespace;
+  MCP_AGENT: DurableObjectNamespace;
 }

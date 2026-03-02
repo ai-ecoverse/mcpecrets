@@ -3,20 +3,14 @@
  *
  * Flow:
  *  1. `get_secret` tool generates a one-time token + ephemeral keypair,
- *     stores `{ privateKey, status: "pending" }` in KV at `callback:{token}` with 60s TTL,
+ *     stores `{ doId }` in KV at `callback:{token}` with 60s TTL,
  *     then triggers a GitHub Actions workflow.
  *  2. The workflow encrypts the secret and POSTs to `POST /api/callback/{token}`
  *     with body `{ encrypted: "<base64>" }`.
- *  3. This handler validates the token, writes the encrypted payload to a
- *     separate key (`callback-response:{token}`), and deletes the original key.
- *  4. The `get_secret` tool polls `callback-response:{token}` for the payload, then decrypts.
+ *  3. This handler reads the DO ID from KV, gets the DO stub, and forwards the
+ *     encrypted payload to the DO via an internal fetch.
+ *  4. The DO resolves the in-memory Promise, and `get_secret` returns the decrypted value.
  */
-
-interface CallbackKVEntry {
-  privateKey: string;
-  status: "pending" | "ready";
-  encrypted?: string;
-}
 
 export async function handleSecretCallback(
   request: Request,
@@ -37,23 +31,18 @@ export async function handleSecretCallback(
     return new Response("Missing token", { status: 400 });
   }
 
-  // Look up the callback entry in KV
+  // Look up the DO ID from KV
   const kvKey = `callback:${token}`;
-  const stored = await env.OAUTH_KV.get(kvKey, "json") as CallbackKVEntry | null;
+  const doIdStr = await env.OAUTH_KV.get(kvKey);
 
-  if (!stored) {
+  if (!doIdStr) {
     return new Response("Token not found or expired", { status: 404 });
-  }
-
-  // Prevent replay — if already consumed, reject
-  if (stored.status === "ready") {
-    return new Response("Token already consumed", { status: 409 });
   }
 
   // Parse the request body
   let body: { encrypted?: string };
   try {
-    body = await request.json() as { encrypted?: string };
+    body = (await request.json()) as { encrypted?: string };
   } catch {
     return new Response("Invalid JSON body", { status: 400 });
   }
@@ -62,20 +51,19 @@ export async function handleSecretCallback(
     return new Response("Missing or invalid 'encrypted' field", { status: 400 });
   }
 
-  // Write the encrypted payload to a SEPARATE key so the polling loop
-  // (running inside the Durable Object) never hits a stale KV cache.
-  // The original `callback:{token}` was cached with status "pending";
-  // `callback-response:{token}` has never been read, so the first GET
-  // will hit KV's authoritative store.
-  const responseKey = `callback-response:${token}`;
-  await env.OAUTH_KV.put(
-    responseKey,
-    JSON.stringify({ encrypted: body.encrypted }),
-    { expirationTtl: 60 },
+  // Get the DO stub and forward the callback
+  const doId = env.MCP_AGENT.idFromString(doIdStr);
+  const stub = env.MCP_AGENT.get(doId);
+  const doResponse = await stub.fetch(
+    new Request(`https://internal/internal/callback/${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ encrypted: body.encrypted }),
+    }),
   );
 
-  // Delete the original key to prevent replay
+  // Clean up the routing key
   await env.OAUTH_KV.delete(kvKey);
 
-  return new Response("OK", { status: 200 });
+  return doResponse;
 }
