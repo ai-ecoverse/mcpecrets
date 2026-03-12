@@ -1,8 +1,2 @@
-# GitHub OAuth credentials
-# Create a GitHub OAuth App at https://github.com/settings/developers
-# Set the Authorization callback URL to: http://localhost:8788/callback
-GITHUB_CLIENT_ID=your_github_client_id
-GITHUB_CLIENT_SECRET=your_github_client_secret
-
-# Cookie encryption key - generate with: openssl rand -hex 32
-COOKIE_ENCRYPTION_KEY=your_random_32_byte_hex_string
+GITHUB_CLIENT_ID=your_github_oauth_app_client_id
+GITHUB_CLIENT_SECRET=your_github_oauth_app_client_secret

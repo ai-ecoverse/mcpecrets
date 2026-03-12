@@ -1,204 +1,132 @@
-import { env } from "cloudflare:workers";
-import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
-import { Hono } from "hono";
-import { Octokit } from "octokit";
-import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, type Props } from "./utils";
-import {
-	addApprovedClient,
-	bindStateToSession,
-	createOAuthState,
-	generateCSRFProtection,
-	isClientApproved,
-	OAuthError,
-	renderApprovalDialog,
-	validateCSRFToken,
-	validateOAuthState,
-} from "./workers-oauth-utils";
+import { Octokit } from "@octokit/rest";
+import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
-const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
+// GitHub OAuth endpoints
+const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 
-app.get("/authorize", async (c) => {
-	const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
-	const { clientId } = oauthReqInfo;
-	if (!clientId) {
-		return c.text("Invalid request", 400);
-	}
+// Scopes we request from GitHub
+const GITHUB_SCOPES = "repo workflow";
 
-	// Check if client is already approved
-	if (await isClientApproved(c.req.raw, clientId, env.COOKIE_ENCRYPTION_KEY)) {
-		// Skip approval dialog but still create secure state and bind to session
-		const { stateToken } = await createOAuthState(oauthReqInfo, c.env.MCPECRETS_KV);
-		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
-		return redirectToGithub(c.req.raw, stateToken, { "Set-Cookie": sessionBindingCookie });
-	}
+/**
+ * Handles the /authorize route:
+ *  1. Parse the incoming MCP OAuth request (from the OAuthProvider)
+ *  2. Store the MCP OAuth request info in KV (keyed by a random state param)
+ *  3. Redirect the user to GitHub for authorization
+ */
+export async function handleAuthorize(
+  request: Request,
+  env: Env & { OAUTH_PROVIDER: OAuthHelpers },
+): Promise<Response> {
+  // Parse the MCP OAuth authorization request
+  const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+  if (!oauthReqInfo.clientId) {
+    return new Response("Invalid OAuth request: missing client_id", { status: 400 });
+  }
 
-	// Generate CSRF protection for the approval form
-	const { token: csrfToken, setCookie } = generateCSRFProtection();
+  // Generate a random state parameter to tie the GitHub callback back to this MCP request
+  const state = crypto.randomUUID();
 
-	return renderApprovalDialog(c.req.raw, {
-		client: await c.env.OAUTH_PROVIDER.lookupClient(clientId),
-		csrfToken,
-		server: {
-			description: "A secure MCP server with GitHub authentication.",
-			logo: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
-			name: "MCPSecrets",
-		},
-		setCookie,
-		state: { oauthReqInfo },
-	});
-});
+  // Store the MCP OAuth request info in KV so we can retrieve it on callback
+  await env.OAUTH_KV.put(
+    `github_oauth_state:${state}`,
+    JSON.stringify(oauthReqInfo),
+    { expirationTtl: 600 }, // 10 minutes
+  );
 
-app.post("/authorize", async (c) => {
-	try {
-		// Read form data once
-		const formData = await c.req.raw.formData();
+  // Build the GitHub authorization URL
+  const githubAuthUrl = new URL(GITHUB_AUTHORIZE_URL);
+  githubAuthUrl.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
+  githubAuthUrl.searchParams.set("redirect_uri", new URL("/callback", request.url).toString());
+  githubAuthUrl.searchParams.set("scope", GITHUB_SCOPES);
+  githubAuthUrl.searchParams.set("state", state);
 
-		// Validate CSRF token
-		validateCSRFToken(formData, c.req.raw);
-
-		// Extract state from form data
-		const encodedState = formData.get("state");
-		if (!encodedState || typeof encodedState !== "string") {
-			return c.text("Missing state in form data", 400);
-		}
-
-		let state: { oauthReqInfo?: AuthRequest };
-		try {
-			state = JSON.parse(atob(encodedState));
-		} catch (_e) {
-			return c.text("Invalid state data", 400);
-		}
-
-		if (!state.oauthReqInfo || !state.oauthReqInfo.clientId) {
-			return c.text("Invalid request", 400);
-		}
-
-		// Add client to approved list
-		const approvedClientCookie = await addApprovedClient(
-			c.req.raw,
-			state.oauthReqInfo.clientId,
-			c.env.COOKIE_ENCRYPTION_KEY
-		);
-
-		// Create OAuth state and bind it to this user's session
-		const { stateToken } = await createOAuthState(state.oauthReqInfo, c.env.MCPECRETS_KV);
-		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
-
-		// Set both cookies: approved client list + session binding
-		const headers = new Headers();
-		headers.append("Set-Cookie", approvedClientCookie);
-		headers.append("Set-Cookie", sessionBindingCookie);
-
-		return redirectToGithub(c.req.raw, stateToken, Object.fromEntries(headers));
-	} catch (error: any) {
-		console.error("POST /authorize error:", error);
-		if (error instanceof OAuthError) {
-			return error.toResponse();
-		}
-		// Unexpected non-OAuth error
-		return c.text(`Internal server error: ${error.message}`, 500);
-	}
-});
-
-async function redirectToGithub(
-	request: Request,
-	stateToken: string,
-	headers: Record<string, string> = {}
-) {
-	return new Response(null, {
-		headers: {
-			...headers,
-			location: getUpstreamAuthorizeUrl({
-				client_id: env.GITHUB_CLIENT_ID,
-				redirect_uri: new URL("/callback", request.url).href,
-				scope: "read:user user:email",
-				state: stateToken,
-				upstream_url: "https://github.com/login/oauth/authorize",
-			}),
-		},
-		status: 302,
-	});
+  return Response.redirect(githubAuthUrl.toString(), 302);
 }
 
 /**
- * OAuth Callback Endpoint
- *
- * This route handles the callback from GitHub after user authentication.
- * It exchanges the temporary code for an access token, then stores some
- * user metadata & the auth token as part of the 'props' on the token passed
- * down to the client. It ends by redirecting the client back to _its_ callback URL
- *
- * SECURITY: This endpoint validates that the state parameter from GitHub
- * matches both:
- * 1. A valid state token in KV (proves it was created by our server)
- * 2. The __Host-CONSENTED_STATE cookie (proves THIS browser consented to it)
- *
- * This prevents CSRF attacks where an attacker's state token is injected
- * into a victim's OAuth flow.
+ * Handles the /callback route:
+ *  1. Validate the state parameter against KV
+ *  2. Exchange the GitHub authorization code for an access token
+ *  3. Fetch the authenticated GitHub user info
+ *  4. Complete the MCP OAuth authorization flow (issues MCP access token with GitHub token in props)
  */
-app.get("/callback", async (c) => {
-	// Validate OAuth state with session binding
-	// This checks both KV storage AND the session cookie
-	let oauthReqInfo: AuthRequest;
-	let clearSessionCookie: string;
+export async function handleCallback(
+  request: Request,
+  env: Env & { OAUTH_PROVIDER: OAuthHelpers },
+): Promise<Response> {
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
 
-	try {
-		const result = await validateOAuthState(c.req.raw, c.env.MCPECRETS_KV);
-		oauthReqInfo = result.oauthReqInfo;
-		clearSessionCookie = result.clearCookie;
-	} catch (error: any) {
-		if (error instanceof OAuthError) {
-			return error.toResponse();
-		}
-		// Unexpected non-OAuth error
-		return c.text("Internal server error", 500);
-	}
+  if (!code || !state) {
+    return new Response("Missing code or state parameter", { status: 400 });
+  }
 
-	if (!oauthReqInfo.clientId) {
-		return c.text("Invalid OAuth request data", 400);
-	}
+  // Retrieve and validate the stored MCP OAuth request info
+  const storedData = await env.OAUTH_KV.get(`github_oauth_state:${state}`);
+  if (!storedData) {
+    return new Response("Invalid or expired state parameter", { status: 400 });
+  }
 
-	// Exchange the code for an access token
-	const [accessToken, errResponse] = await fetchUpstreamAuthToken({
-		client_id: c.env.GITHUB_CLIENT_ID,
-		client_secret: c.env.GITHUB_CLIENT_SECRET,
-		code: c.req.query("code"),
-		redirect_uri: new URL("/callback", c.req.url).href,
-		upstream_url: "https://github.com/login/oauth/access_token",
-	});
-	if (errResponse) return errResponse;
+  // Delete the state from KV immediately to prevent replay
+  await env.OAUTH_KV.delete(`github_oauth_state:${state}`);
 
-	// Fetch the user info from GitHub
-	const user = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
-	const { login, name, email } = user.data;
+  const oauthReqInfo = JSON.parse(storedData);
 
-	// Return back to the MCP client a new token
-	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
-		metadata: {
-			label: name || login,
-		},
-		// This will be available on this.props inside MCPSecrets
-		props: {
-			accessToken,
-			email: email || "",
-			login,
-			name: name || "",
-		} as Props,
-		request: oauthReqInfo,
-		scope: oauthReqInfo.scope,
-		userId: login,
-	});
+  // Exchange the GitHub code for an access token
+  const tokenResponse = await fetch(GITHUB_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      client_id: env.GITHUB_CLIENT_ID,
+      client_secret: env.GITHUB_CLIENT_SECRET,
+      code,
+      redirect_uri: new URL("/callback", request.url).toString(),
+    }),
+  });
 
-	// Clear the session binding cookie (one-time use) by creating response with headers
-	const headers = new Headers({ Location: redirectTo });
-	if (clearSessionCookie) {
-		headers.set("Set-Cookie", clearSessionCookie);
-	}
+  if (!tokenResponse.ok) {
+    return new Response("Failed to exchange code for token", { status: 502 });
+  }
 
-	return new Response(null, {
-		status: 302,
-		headers,
-	});
-});
+  const tokenData = (await tokenResponse.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
 
-export { app as GitHubHandler };
+  if (tokenData.error || !tokenData.access_token) {
+    return new Response(
+      `GitHub OAuth error: ${tokenData.error_description || tokenData.error || "unknown"}`,
+      { status: 400 },
+    );
+  }
+
+  const gitHubToken = tokenData.access_token;
+
+  // Fetch the authenticated GitHub user info
+  const octokit = new Octokit({ auth: gitHubToken });
+  const { data: ghUser } = await octokit.users.getAuthenticated();
+
+  // Complete the MCP OAuth authorization — this issues the MCP access token
+  // with the GitHub credentials embedded in props
+  const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+    request: oauthReqInfo,
+    userId: String(ghUser.id),
+    metadata: {
+      gitHubLogin: ghUser.login,
+    },
+    scope: oauthReqInfo.scope,
+    props: {
+      gitHubToken,
+      gitHubLogin: ghUser.login,
+      gitHubUserId: ghUser.id,
+    },
+  });
+
+  return Response.redirect(redirectTo, 302);
+}

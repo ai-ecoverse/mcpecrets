@@ -1,143 +1,70 @@
-# MCPSecrets
+# MCPecrets
 
-A Cloudflare Worker implementing the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) with GitHub OAuth authentication and Dynamic Client Registration.
+A lightweight MCP secrets manager that uses Cloudflare Workers for compute and GitHub for persistence.
 
-## Features
+## What it does
 
-- **Remote MCP Server**: Implements the latest MCP specification with Streamable-HTTP transport
-- **OAuth 2.1 with PKCE**: Full OAuth 2.1 support with dynamic client registration
-- **GitHub Authentication**: Users authenticate with their GitHub account
-- **Secure by Default**: CSRF protection, state validation, and secure cookie handling
+MCPecrets stores secrets as GitHub Actions Secrets and retrieves them via a triggered GitHub Action with ephemeral key encryption. It exposes five MCP tools over OAuth 2.1 with dynamic client registration, so it works with any MCP-compatible client -- Claude, ChatGPT, or anything else that speaks the protocol.
 
-## Available Tools
+No database. No additional storage. Just Cloudflare Workers and GitHub.
+
+## Screenshots
+
+Creating a vault with `init_vault` (shown in Claude on claude.ai):
+
+![Creating a vault and initializing it with init_vault](docs/images/init-vault.png)
+
+Storing a secret with `set_secret` (shown in Claude on claude.ai):
+
+![Storing a secret with set_secret](docs/images/set-secret.png)
+
+Retrieving a secret with `get_secret` -- works across MCP clients (shown here in ChatGPT on chatgpt.com):
+
+![Retrieving a secret with get_secret in ChatGPT](docs/images/get-secret.png)
+
+## How it works
+
+1. **Authentication**: OAuth 2.1 with dynamic client registration, delegating to GitHub for identity. The Worker acts as both the MCP server and the OAuth provider.
+2. **Storing secrets**: Values are encrypted using the repository's public key (libsodium sealed box) and stored via the GitHub Actions Secrets API. A retrieval workflow is committed/updated in the vault repo whenever secrets change.
+3. **Retrieving secrets**: The Worker generates an ephemeral X25519 keypair and triggers a GitHub Actions workflow. The workflow encrypts the secret with the ephemeral public key and POSTs the ciphertext back to the Worker. The Worker decrypts with the ephemeral private key and returns the plaintext to the MCP client.
+
+Secrets are encrypted at rest by GitHub and encrypted in transit with ephemeral keys. The Worker never persists secret values.
+
+## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `get-username` | Returns the authenticated user's GitHub username |
+| `init_vault` | Create a new private GitHub repo as a secrets vault |
+| `set_secret` | Store a secret (encrypted with the repo's public key) |
+| `get_secret` | Retrieve a secret value via GitHub Actions callback |
+| `list_secrets` | List secret names in a vault (values are never exposed) |
+| `delete_secret` | Remove a secret from a vault |
 
 ## Setup
 
-### Prerequisites
+1. **Create a GitHub OAuth App** at [github.com/settings/developers](https://github.com/settings/developers). Set the callback URL to `https://<your-worker>.workers.dev/callback`.
 
-- [Node.js](https://nodejs.org/) 18+
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
-- A Cloudflare account
-- A GitHub OAuth App
+2. **Deploy to Cloudflare Workers**:
+   ```sh
+   npm install
+   npx wrangler deploy
+   ```
 
-### 1. Create a GitHub OAuth App
+3. **Set secrets** on the deployed Worker:
+   ```sh
+   npx wrangler secret put GITHUB_CLIENT_ID
+   npx wrangler secret put GITHUB_CLIENT_SECRET
+   ```
 
-1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
-2. Click "New OAuth App"
-3. Fill in the details:
-   - **Application name**: MCPSecrets (or your preferred name)
-   - **Homepage URL**: `https://mcpecrets.<your-subdomain>.workers.dev`
-   - **Authorization callback URL**: `https://mcpecrets.<your-subdomain>.workers.dev/callback`
-4. Save the Client ID and generate a Client Secret
+4. **Connect your MCP client** to `https://<your-worker>.workers.dev/mcp`. The deployed instance is at:
+   ```
+   https://mcpecrets.minivelos.workers.dev/mcp
+   ```
 
-### 2. Install Dependencies
+## Tech Stack
 
-```bash
-npm install
-```
-
-### 3. Create KV Namespace
-
-```bash
-wrangler kv namespace create "OAUTH_KV"
-```
-
-Copy the ID from the output and update `wrangler.jsonc`:
-
-```jsonc
-"kv_namespaces": [
-  {
-    "binding": "OAUTH_KV",
-    "id": "<your-kv-namespace-id>"
-  }
-]
-```
-
-### 4. Set Secrets
-
-```bash
-wrangler secret put GITHUB_CLIENT_ID
-wrangler secret put GITHUB_CLIENT_SECRET
-wrangler secret put COOKIE_ENCRYPTION_KEY
-```
-
-Generate the cookie encryption key with:
-```bash
-openssl rand -hex 32
-```
-
-### 5. Deploy
-
-```bash
-npm run deploy
-```
-
-## Local Development
-
-1. Copy `.dev.vars.example` to `.dev.vars` and fill in your GitHub OAuth credentials:
-
-```bash
-cp .dev.vars.example .dev.vars
-```
-
-2. For local development, update your GitHub OAuth App callback URL to:
-   - `http://localhost:8788/callback`
-
-3. Start the development server:
-
-```bash
-npm run dev
-```
-
-## Usage with MCP Clients
-
-### Claude Desktop
-
-Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
-
-```json
-{
-  "mcpServers": {
-    "mcpecrets": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://mcpecrets.<your-subdomain>.workers.dev/mcp"
-      ]
-    }
-  }
-}
-```
-
-### Cursor
-
-Use the MCP connection type with URL:
-```
-https://mcpecrets.<your-subdomain>.workers.dev/mcp
-```
-
-## API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `/mcp` | Streamable-HTTP MCP endpoint |
-| `/authorize` | OAuth authorization endpoint |
-| `/token` | OAuth token endpoint |
-| `/register` | OAuth dynamic client registration |
-| `/callback` | GitHub OAuth callback |
-
-## Architecture
-
-This worker uses:
-- [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) - OAuth 2.1 provider implementation
-- [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/sdk) - MCP SDK
-- [`agents`](https://www.npmjs.com/package/agents) - Cloudflare Agents framework for durable MCP state
-- [Hono](https://hono.dev/) - Lightweight web framework for routing
-
-## License
-
-Apache-2.0
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/) + Durable Objects + KV
+- [GitHub OAuth](https://docs.github.com/en/apps/oauth-apps) + [Actions Secrets API](https://docs.github.com/en/rest/actions/secrets)
+- [MCP](https://modelcontextprotocol.io/) (Streamable HTTP transport) via `@modelcontextprotocol/sdk`
+- [tweetnacl](https://www.npmjs.com/package/tweetnacl) + [blakejs](https://www.npmjs.com/package/blakejs) for X25519 / sealed box crypto
+- [Octokit](https://github.com/octokit/rest.js) for GitHub API

@@ -1,25 +1,28 @@
 {
   "name": "mcpecrets",
-  "version": "0.0.1",
-  "description": "MCP server with GitHub OAuth authentication for Cloudflare Workers",
-  "type": "module",
+  "version": "0.1.0",
+  "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "cf-typegen": "wrangler types"
+    "deploy": "wrangler deploy",
+    "types": "wrangler types --no-include-runtime"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.0.7",
+    "@cloudflare/workers-oauth-provider": "^0.0.5",
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "agents": "^0.0.87",
-    "hono": "^4.7.10",
-    "octokit": "^4.1.2",
-    "zod": "^3.24.4"
+    "@octokit/rest": "^22.0.0",
+    "@stablelib/base64": "^2.0.0",
+    "agents": "^0.0.98",
+    "blakejs": "1.2.1",
+    "hono": "^4.7.5",
+    "tweetnacl": "1.0.3",
+    "tweetnacl-util": "0.15.1",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250521.0",
-    "prettier": "^3.5.3",
-    "typescript": "^5.9.3",
-    "wrangler": "^4.16.0"
+    "@cloudflare/workers-types": "^4.20260305.0",
+    "@types/node": "25.3.3",
+    "typescript": "^5.8.2",
+    "wrangler": "^4.6.0"
   }
 }

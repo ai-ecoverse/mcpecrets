@@ -2,44 +2,39 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "mcpecrets",
   "main": "src/index.ts",
-  "compatibility_date": "2025-03-10",
+  "compatibility_date": "2025-03-14",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Durable Objects - needed for MCP state management
-  "migrations": [
+  // KV namespace for OAuth state and temporary callback tokens
+  "kv_namespaces": [
     {
-      "new_sqlite_classes": ["MCPSecrets"],
-      "tag": "v1"
+      "binding": "OAUTH_KV",
+      "id": "8d90d7f0850e4e75985dd5a5b76ddb20"
     }
   ],
+
+  // Durable Object for MCP agent sessions
   "durable_objects": {
     "bindings": [
       {
-        "class_name": "MCPSecrets",
-        "name": "MCP_OBJECT"
+        "name": "MCP_AGENT",
+        "class_name": "McpAgentDO"
       }
     ]
   },
 
-  // KV namespace for OAuth state storage
-  // Create with: wrangler kv namespace create "MCPECRETS_KV"
-  "kv_namespaces": [
+  "migrations": [
     {
-      "binding": "MCPECRETS_KV",
-      "id": "b4b342f3e7444c0ba8d2b1ba1505b05a"
+      "tag": "v1",
+      "new_sqlite_classes": ["McpAgentDO"]
     }
   ],
 
-  // Account ID
-  "account_id": "155ec15a52a18a14801e04b019da5e5a",
-
-  // Enable observability
-  "observability": {
-    "enabled": true
-  },
-
-  // Local development port
-  "dev": {
-    "port": 8788
+  // Secrets (set via `wrangler secret put`):
+  // - GITHUB_CLIENT_ID
+  // - GITHUB_CLIENT_SECRET
+  // WORKER_URL should be set to the deployed worker URL (e.g. https://mcpecrets.<account>.workers.dev)
+  "vars": {
+    "WORKER_URL": "https://mcpecrets.minivelos.workers.dev"
   }
 }
