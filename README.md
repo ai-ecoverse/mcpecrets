@@ -1,5 +1,7 @@
 # MCPecrets
 
+[![100% Vibe_Coded](https://img.shields.io/badge/100%25-Vibe_Coded-ff69b4?style=for-the-badge&logo=claude&logoColor=white)](https://github.com/ai-ecoverse/vibe-coded-badge-action)
+
 A lightweight MCP secrets manager that uses Cloudflare Workers for compute and GitHub for persistence.
 
 ## What it does
