@@ -1,6 +1,6 @@
 # MCPecrets
 
-[![100% Vibe_Coded](https://img.shields.io/badge/100%25-Vibe_Coded-ff69b4?style=for-the-badge&logo=claude&logoColor=white)](https://github.com/ai-ecoverse/vibe-coded-badge-action)
+[![93% Vibe_Coded](https://img.shields.io/badge/93%25-Vibe_Coded-ff69b4?style=for-the-badge&logo=claude&logoColor=white)](https://github.com/ai-ecoverse/vibe-coded-badge-action)
 
 ![mcpecrets — secrets, kept](hero-banner.png)
 
