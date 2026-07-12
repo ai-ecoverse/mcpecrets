@@ -8,7 +8,7 @@
     "types": "wrangler types --no-include-runtime"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.0.5",
+    "@cloudflare/workers-oauth-provider": "^0.8.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@octokit/rest": "^22.0.0",
     "@stablelib/base64": "^2.0.0",
