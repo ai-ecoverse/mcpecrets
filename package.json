@@ -12,7 +12,7 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@octokit/rest": "^22.0.0",
     "@stablelib/base64": "^2.0.0",
-    "agents": "^0.0.98",
+    "agents": "^0.22.0",
     "blakejs": "1.2.1",
     "hono": "^4.7.5",
     "tweetnacl": "1.0.3",
