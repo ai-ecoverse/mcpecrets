@@ -100,13 +100,16 @@ function errorMessage(err: unknown): string {
 
 /**
  * Commit/update the workflow file in the vault repo.
+ *
+ * Returns "unchanged" when the committed workflow already matches what we
+ * would write; in that case nothing is committed.
  */
 async function commitWorkflow(
   octokit: Octokit,
   owner: string,
   repo: string,
   secretNames: string[],
-): Promise<void> {
+): Promise<"unchanged" | "committed"> {
   const path = ".github/workflows/retrieve-secret.yml";
   const content = generateWorkflowYaml(secretNames);
   const contentBase64 = btoa(content);
@@ -116,6 +119,15 @@ async function commitWorkflow(
     const { data } = await octokit.repos.getContent({ owner, repo, path });
     if ("sha" in data) {
       sha = data.sha;
+    }
+    // Nothing to do if the workflow already says what we want it to say.
+    // GitHub wraps the base64 payload at 60 columns.
+    if (
+      "content" in data &&
+      typeof data.content === "string" &&
+      data.content.replace(/\s/g, "") === contentBase64
+    ) {
+      return "unchanged";
     }
   } catch (err) {
     // Only a 404 means the file doesn't exist yet. Anything else (403 rate
@@ -132,6 +144,8 @@ async function commitWorkflow(
     content: contentBase64,
     ...(sha ? { sha } : {}),
   });
+
+  return "committed";
 }
 
 /**
@@ -278,6 +292,14 @@ export function registerTools(ctx: ToolContext) {
         repo: repoName,
       });
 
+      // Listed before the write, so that a listing failure is a clean failure
+      // with nothing mutated — and so we can tell a new secret from an update.
+      const allSecrets = await getAllSecretNames(octokit, owner, repoName);
+      const isNewSecret = !allSecrets.includes(name);
+      if (isNewSecret) {
+        allSecrets.push(name);
+      }
+
       const keyBytes = naclUtil.decodeBase64(publicKey.key);
       const messageBytes = naclUtil.decodeUTF8(value);
       const encrypted = sealedBoxForGitHub(messageBytes, keyBytes);
@@ -291,16 +313,27 @@ export function registerTools(ctx: ToolContext) {
         key_id: publicKey.key_id,
       });
 
-      // The secret is now stored. Everything below only refreshes the
-      // retrieval workflow, so a failure here is a partial success: report it
-      // as such instead of claiming the whole operation worked or failed.
+      // The secret is now stored. The workflow refresh below is a no-op when
+      // the committed workflow already maps this set of names, so a failure
+      // here only matters for a name the workflow doesn't map yet.
       try {
-        const allSecrets = await getAllSecretNames(octokit, owner, repoName);
-        if (!allSecrets.includes(name)) {
-          allSecrets.push(name);
-        }
         await commitWorkflow(octokit, owner, repoName, allSecrets);
       } catch (err) {
+        if (!isNewSecret) {
+          // The workflow maps `${{ secrets.NAME }}`, resolved at run time, and
+          // NAME was already in it, so retrieval already returns the new value.
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Secret "${name}" updated in ${repo}. The workflow refresh was ` +
+                  `skipped (${errorMessage(err)}), but "${name}" was already mapped ` +
+                  `by the workflow, so retrieval returns the new value.`,
+              },
+            ],
+          };
+        }
         return {
           isError: true,
           content: [
@@ -308,8 +341,9 @@ export function registerTools(ctx: ToolContext) {
               type: "text" as const,
               text:
                 `Partial success: secret "${name}" WAS stored in ${repo}, but the ` +
-                `retrieval workflow could not be updated, so get_secret("${name}") ` +
-                `will not work yet.\n` +
+                `retrieval workflow could not be updated. Because "${name}" is new, ` +
+                `the workflow does not map it yet and get_secret cannot return it ` +
+                `(repo: "${repo}", name: "${name}").\n` +
                 `Cause: ${errorMessage(err)}\n` +
                 `Retry set_secret with the same arguments to repair the workflow.`,
             },
@@ -488,11 +522,20 @@ export function registerTools(ctx: ToolContext) {
       const [owner, repoName] = repo.split("/");
       const octokit = new Octokit({ auth: ctx.props.gitHubToken });
 
-      await octokit.actions.deleteRepoSecret({
-        owner,
-        repo: repoName,
-        secret_name: name,
-      });
+      // A 404 means the secret is already gone. Tolerating it keeps this tool
+      // idempotent, so retrying after a failed workflow refresh below actually
+      // reaches the refresh instead of failing on the missing secret.
+      let alreadyAbsent = false;
+      try {
+        await octokit.actions.deleteRepoSecret({
+          owner,
+          repo: repoName,
+          secret_name: name,
+        });
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+        alreadyAbsent = true;
+      }
 
       // Same partial-success story as set_secret: the delete already happened.
       try {
@@ -505,10 +548,12 @@ export function registerTools(ctx: ToolContext) {
             {
               type: "text" as const,
               text:
-                `Partial success: secret "${name}" WAS deleted from ${repo}, but the ` +
-                `retrieval workflow could not be updated, so it still lists "${name}".\n` +
+                `Partial success: secret "${name}" is ${alreadyAbsent ? "absent from" : "deleted from"} ` +
+                `${repo}, but the retrieval workflow could not be updated, so it still ` +
+                `lists "${name}".\n` +
                 `Cause: ${errorMessage(err)}\n` +
-                `Retry delete_secret with the same arguments to repair the workflow.`,
+                `Retry delete_secret with the same arguments to repair the workflow ` +
+                `(the delete is idempotent, so the retry is safe).`,
             },
           ],
         };
@@ -518,7 +563,9 @@ export function registerTools(ctx: ToolContext) {
         content: [
           {
             type: "text" as const,
-            text: `Secret "${name}" deleted from ${repo}. Workflow updated.`,
+            text: alreadyAbsent
+              ? `Secret "${name}" was already absent from ${repo}. Workflow updated.`
+              : `Secret "${name}" deleted from ${repo}. Workflow updated.`,
           },
         ],
       };
