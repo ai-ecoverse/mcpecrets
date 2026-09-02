@@ -82,14 +82,34 @@ function sealedBoxOpen(
 // ---------------------------------------------------------------------------
 
 /**
+ * True only for a genuine "this path does not exist" response from the
+ * contents API. Octokit throws RequestError, which carries `.status`.
+ */
+function isNotFound(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    (err as { status?: unknown }).status === 404
+  );
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
  * Commit/update the workflow file in the vault repo.
+ *
+ * Returns "unchanged" when the committed workflow already matches what we
+ * would write; in that case nothing is committed.
  */
 async function commitWorkflow(
   octokit: Octokit,
   owner: string,
   repo: string,
   secretNames: string[],
-): Promise<void> {
+): Promise<"unchanged" | "committed"> {
   const path = ".github/workflows/retrieve-secret.yml";
   const content = generateWorkflowYaml(secretNames);
   const contentBase64 = btoa(content);
@@ -100,8 +120,20 @@ async function commitWorkflow(
     if ("sha" in data) {
       sha = data.sha;
     }
-  } catch {
-    // File doesn't exist yet
+    // Nothing to do if the workflow already says what we want it to say.
+    // GitHub wraps the base64 payload at 60 columns.
+    if (
+      "content" in data &&
+      typeof data.content === "string" &&
+      data.content.replace(/\s/g, "") === contentBase64
+    ) {
+      return "unchanged";
+    }
+  } catch (err) {
+    // Only a 404 means the file doesn't exist yet. Anything else (403 rate
+    // limit, 401, 5xx) must surface: swallowing it leaves `sha` undefined and
+    // the update below fails with a misleading "sha wasn't supplied" error.
+    if (!isNotFound(err)) throw err;
   }
 
   await octokit.repos.createOrUpdateFileContents({
@@ -112,6 +144,8 @@ async function commitWorkflow(
     content: contentBase64,
     ...(sha ? { sha } : {}),
   });
+
+  return "committed";
 }
 
 /**
@@ -198,7 +232,28 @@ export function registerTools(ctx: ToolContext) {
           has_wiki: false,
         });
 
-      await commitWorkflow(octokit, repo.owner.login, repo.name, []);
+      // The repo exists from here on, so a workflow-commit failure leaves a
+      // vault that can hold secrets but cannot serve them. Say so plainly.
+      try {
+        await commitWorkflow(octokit, repo.owner.login, repo.name, []);
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Partial success: vault repository ${repo.full_name} WAS created, but the ` +
+                `retrieval workflow could not be committed, so get_secret will not work ` +
+                `against it yet.\n` +
+                `Cause: ${errorMessage(err)}\n` +
+                `The workflow is rewritten on every set_secret / delete_secret, so a ` +
+                `successful set_secret against ${repo.full_name} will repair it. ` +
+                `Do not re-run init_vault with the same name — the repository already exists.`,
+            },
+          ],
+        };
+      }
 
       return {
         content: [
@@ -237,6 +292,14 @@ export function registerTools(ctx: ToolContext) {
         repo: repoName,
       });
 
+      // Listed before the write, so that a listing failure is a clean failure
+      // with nothing mutated — and so we can tell a new secret from an update.
+      const allSecrets = await getAllSecretNames(octokit, owner, repoName);
+      const isNewSecret = !allSecrets.includes(name);
+      if (isNewSecret) {
+        allSecrets.push(name);
+      }
+
       const keyBytes = naclUtil.decodeBase64(publicKey.key);
       const messageBytes = naclUtil.decodeUTF8(value);
       const encrypted = sealedBoxForGitHub(messageBytes, keyBytes);
@@ -250,11 +313,43 @@ export function registerTools(ctx: ToolContext) {
         key_id: publicKey.key_id,
       });
 
-      const allSecrets = await getAllSecretNames(octokit, owner, repoName);
-      if (!allSecrets.includes(name)) {
-        allSecrets.push(name);
+      // The secret is now stored. The workflow refresh below is a no-op when
+      // the committed workflow already maps this set of names, so a failure
+      // here only matters for a name the workflow doesn't map yet.
+      try {
+        await commitWorkflow(octokit, owner, repoName, allSecrets);
+      } catch (err) {
+        if (!isNewSecret) {
+          // The workflow maps `${{ secrets.NAME }}`, resolved at run time, and
+          // NAME was already in it, so retrieval already returns the new value.
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Secret "${name}" updated in ${repo}. The workflow refresh was ` +
+                  `skipped (${errorMessage(err)}), but "${name}" was already mapped ` +
+                  `by the workflow, so retrieval returns the new value.`,
+              },
+            ],
+          };
+        }
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Partial success: secret "${name}" WAS stored in ${repo}, but the ` +
+                `retrieval workflow could not be updated. Because "${name}" is new, ` +
+                `the workflow does not map it yet and get_secret cannot return it ` +
+                `(repo: "${repo}", name: "${name}").\n` +
+                `Cause: ${errorMessage(err)}\n` +
+                `Retry set_secret with the same arguments to repair the workflow.`,
+            },
+          ],
+        };
       }
-      await commitWorkflow(octokit, owner, repoName, allSecrets);
 
       return {
         content: [
@@ -427,20 +522,50 @@ export function registerTools(ctx: ToolContext) {
       const [owner, repoName] = repo.split("/");
       const octokit = new Octokit({ auth: ctx.props.gitHubToken });
 
-      await octokit.actions.deleteRepoSecret({
-        owner,
-        repo: repoName,
-        secret_name: name,
-      });
+      // A 404 means the secret is already gone. Tolerating it keeps this tool
+      // idempotent, so retrying after a failed workflow refresh below actually
+      // reaches the refresh instead of failing on the missing secret.
+      let alreadyAbsent = false;
+      try {
+        await octokit.actions.deleteRepoSecret({
+          owner,
+          repo: repoName,
+          secret_name: name,
+        });
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+        alreadyAbsent = true;
+      }
 
-      const allSecrets = await getAllSecretNames(octokit, owner, repoName);
-      await commitWorkflow(octokit, owner, repoName, allSecrets);
+      // Same partial-success story as set_secret: the delete already happened.
+      try {
+        const allSecrets = await getAllSecretNames(octokit, owner, repoName);
+        await commitWorkflow(octokit, owner, repoName, allSecrets);
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Partial success: secret "${name}" is ${alreadyAbsent ? "absent from" : "deleted from"} ` +
+                `${repo}, but the retrieval workflow could not be updated, so it still ` +
+                `lists "${name}".\n` +
+                `Cause: ${errorMessage(err)}\n` +
+                `Retry delete_secret with the same arguments to repair the workflow ` +
+                `(the delete is idempotent, so the retry is safe).`,
+            },
+          ],
+        };
+      }
 
       return {
         content: [
           {
             type: "text" as const,
-            text: `Secret "${name}" deleted from ${repo}. Workflow updated.`,
+            text: alreadyAbsent
+              ? `Secret "${name}" was already absent from ${repo}. Workflow updated.`
+              : `Secret "${name}" deleted from ${repo}. Workflow updated.`,
           },
         ],
       };
