@@ -1,0 +1,39 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# One deploy at a time; a newer commit on main supersedes an in-flight run
+# only after it finishes, so we never publish an older build over a newer one.
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Uses the wrangler version pinned in package.json rather than a
+      # separately versioned action.
+      - name: Deploy
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

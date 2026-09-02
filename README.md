@@ -65,6 +65,19 @@ Secrets are encrypted at rest by GitHub and encrypted in transit with ephemeral 
    https://mcpecrets.minivelos.workers.dev/mcp
    ```
 
+## Continuous deployment
+
+Every push to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
+which type-checks and then runs `wrangler deploy`. It needs two repository secrets:
+
+| Secret | Value |
+|--------|-------|
+| `CLOUDFLARE_API_TOKEN` | API token using the **Edit Cloudflare Workers** template (Workers Scripts: Edit, Workers KV Storage: Edit) |
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID that owns the `mcpecrets` Worker |
+
+Worker secrets (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) are not touched by the
+workflow — they stay set via `wrangler secret put`.
+
 ## Tech Stack
 
 - [Cloudflare Workers](https://developers.cloudflare.com/workers/) + Durable Objects + KV
