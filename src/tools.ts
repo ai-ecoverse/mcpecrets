@@ -82,6 +82,23 @@ function sealedBoxOpen(
 // ---------------------------------------------------------------------------
 
 /**
+ * True only for a genuine "this path does not exist" response from the
+ * contents API. Octokit throws RequestError, which carries `.status`.
+ */
+function isNotFound(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    (err as { status?: unknown }).status === 404
+  );
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
  * Commit/update the workflow file in the vault repo.
  */
 async function commitWorkflow(
@@ -100,8 +117,11 @@ async function commitWorkflow(
     if ("sha" in data) {
       sha = data.sha;
     }
-  } catch {
-    // File doesn't exist yet
+  } catch (err) {
+    // Only a 404 means the file doesn't exist yet. Anything else (403 rate
+    // limit, 401, 5xx) must surface: swallowing it leaves `sha` undefined and
+    // the update below fails with a misleading "sha wasn't supplied" error.
+    if (!isNotFound(err)) throw err;
   }
 
   await octokit.repos.createOrUpdateFileContents({
@@ -198,7 +218,28 @@ export function registerTools(ctx: ToolContext) {
           has_wiki: false,
         });
 
-      await commitWorkflow(octokit, repo.owner.login, repo.name, []);
+      // The repo exists from here on, so a workflow-commit failure leaves a
+      // vault that can hold secrets but cannot serve them. Say so plainly.
+      try {
+        await commitWorkflow(octokit, repo.owner.login, repo.name, []);
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Partial success: vault repository ${repo.full_name} WAS created, but the ` +
+                `retrieval workflow could not be committed, so get_secret will not work ` +
+                `against it yet.\n` +
+                `Cause: ${errorMessage(err)}\n` +
+                `The workflow is rewritten on every set_secret / delete_secret, so a ` +
+                `successful set_secret against ${repo.full_name} will repair it. ` +
+                `Do not re-run init_vault with the same name — the repository already exists.`,
+            },
+          ],
+        };
+      }
 
       return {
         content: [
@@ -250,11 +291,31 @@ export function registerTools(ctx: ToolContext) {
         key_id: publicKey.key_id,
       });
 
-      const allSecrets = await getAllSecretNames(octokit, owner, repoName);
-      if (!allSecrets.includes(name)) {
-        allSecrets.push(name);
+      // The secret is now stored. Everything below only refreshes the
+      // retrieval workflow, so a failure here is a partial success: report it
+      // as such instead of claiming the whole operation worked or failed.
+      try {
+        const allSecrets = await getAllSecretNames(octokit, owner, repoName);
+        if (!allSecrets.includes(name)) {
+          allSecrets.push(name);
+        }
+        await commitWorkflow(octokit, owner, repoName, allSecrets);
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Partial success: secret "${name}" WAS stored in ${repo}, but the ` +
+                `retrieval workflow could not be updated, so get_secret("${name}") ` +
+                `will not work yet.\n` +
+                `Cause: ${errorMessage(err)}\n` +
+                `Retry set_secret with the same arguments to repair the workflow.`,
+            },
+          ],
+        };
       }
-      await commitWorkflow(octokit, owner, repoName, allSecrets);
 
       return {
         content: [
@@ -433,8 +494,25 @@ export function registerTools(ctx: ToolContext) {
         secret_name: name,
       });
 
-      const allSecrets = await getAllSecretNames(octokit, owner, repoName);
-      await commitWorkflow(octokit, owner, repoName, allSecrets);
+      // Same partial-success story as set_secret: the delete already happened.
+      try {
+        const allSecrets = await getAllSecretNames(octokit, owner, repoName);
+        await commitWorkflow(octokit, owner, repoName, allSecrets);
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Partial success: secret "${name}" WAS deleted from ${repo}, but the ` +
+                `retrieval workflow could not be updated, so it still lists "${name}".\n` +
+                `Cause: ${errorMessage(err)}\n` +
+                `Retry delete_secret with the same arguments to repair the workflow.`,
+            },
+          ],
+        };
+      }
 
       return {
         content: [
