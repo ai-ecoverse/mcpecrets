@@ -1,5 +1,5 @@
 import { Octokit } from "@octokit/rest";
-import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import { AuthorizationError, type AuthRequest, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 // GitHub OAuth endpoints
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
@@ -18,8 +18,14 @@ export async function handleAuthorize(
   request: Request,
   env: Env & { OAUTH_PROVIDER: OAuthHelpers },
 ): Promise<Response> {
-  // Parse the MCP OAuth authorization request
-  const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+  let oauthReqInfo: AuthRequest;
+  try {
+    oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+  } catch (error) {
+    if (!(error instanceof AuthorizationError)) throw error;
+    if (error.redirectTo) return Response.redirect(error.redirectTo, 302);
+    return new Response(`Invalid OAuth request: ${error.description}`, { status: 400 });
+  }
   if (!oauthReqInfo.clientId) {
     return new Response("Invalid OAuth request: missing client_id", { status: 400 });
   }

@@ -1,27 +1,22 @@
-import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
+import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { handleAuthorize, handleCallback } from "./github-handler";
 import { handleSecretCallback } from "./callback";
 import { registerTools } from "./tools";
 
-// Props stored in the OAuth token — available to the MCP agent on every request
 export type OAuthProps = {
   gitHubToken: string;
   gitHubLogin: string;
   gitHubUserId: number;
 };
 
-// ---------------------------------------------------------------------------
-// MCP Agent — Durable Object that handles MCP protocol sessions
-// ---------------------------------------------------------------------------
 export class McpAgentDO extends McpAgent<Env, unknown, OAuthProps> {
   server = new McpServer({
     name: "mcpecrets",
     version: "0.1.0",
   });
 
-  // Map of callback token → { resolve, reject } for pending get_secret calls
   pendingCallbacks = new Map<
     string,
     { resolve: (encrypted: string) => void; reject: (err: Error) => void }
@@ -42,7 +37,6 @@ export class McpAgentDO extends McpAgent<Env, unknown, OAuthProps> {
     });
   }
 
-  // Handle internal callback delivery from the defaultHandler
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (
@@ -59,24 +53,19 @@ export class McpAgentDO extends McpAgent<Env, unknown, OAuthProps> {
       }
       return new Response("No pending callback", { status: 404 });
     }
-    // Let the parent McpAgent handle MCP protocol requests
     return super.fetch(request);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Default handler — serves the authorization UI and non-API routes
-// ---------------------------------------------------------------------------
-const defaultHandler = {
-  async fetch(request: Request, env: Env & { OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers }, ctx: ExecutionContext) {
+const defaultHandler: ExportedHandler<Env> = {
+  async fetch(request, workerEnv) {
+    const env = workerEnv as Env & { OAUTH_PROVIDER: OAuthHelpers };
     const url = new URL(request.url);
 
-    // Secret callback from GitHub Actions — route through the Durable Object
     if (url.pathname.startsWith("/api/callback/")) {
       return handleSecretCallback(request, env);
     }
 
-    // GitHub OAuth flow
     if (url.pathname === "/authorize") {
       return handleAuthorize(request, env);
     }
@@ -88,20 +77,44 @@ const defaultHandler = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Main export — OAuthProvider wraps everything
-// ---------------------------------------------------------------------------
-export default new OAuthProvider({
-  apiRoute: "/mcp",
-  apiHandler: McpAgentDO.serve("/mcp", { binding: "MCP_AGENT" }),
+const apiHandler = McpAgentDO.serve("/mcp", { binding: "MCP_AGENT" });
 
-  defaultHandler: defaultHandler as ExportedHandler,
+const SCOPES = ["read", "write"];
 
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register",
+function createProvider(workerUrl: string): OAuthProvider<Env> {
+  const origin = new URL(workerUrl).origin;
+  return new OAuthProvider<Env>({
+    apiRoute: "/mcp",
+    apiHandler,
+    defaultHandler,
+    authorizeEndpoint: "/authorize",
+    tokenEndpoint: "/token",
+    clientRegistrationEndpoint: "/register",
+    scopesSupported: SCOPES,
+    requiredScopes: SCOPES,
+    resourceMetadata: {
+      resource: `${origin}/mcp`,
+      authorization_servers: [origin],
+      bearer_methods_supported: ["header"],
+      resource_name: "mcpecrets",
+    },
+    accessTokenTTL: 3600,
+  });
+}
 
-  scopesSupported: ["read", "write"],
+const providers = new Map<string, OAuthProvider<Env>>();
 
-  accessTokenTTL: 3600, // 1 hour
-});
+function providerFor(workerUrl: string): OAuthProvider<Env> {
+  let provider = providers.get(workerUrl);
+  if (!provider) {
+    provider = createProvider(workerUrl);
+    providers.set(workerUrl, provider);
+  }
+  return provider;
+}
+
+export default {
+  fetch(request, env, ctx) {
+    return providerFor(env.WORKER_URL).fetch(request, env, ctx);
+  },
+} satisfies ExportedHandler<Env>;
