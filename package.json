@@ -5,14 +5,15 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "types": "wrangler types --no-include-runtime"
+    "types": "wrangler types --no-include-runtime",
+    "test:integration": "node --test 'test/integration/*.test.mjs'"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.10.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@octokit/rest": "^22.0.0",
     "@stablelib/base64": "^2.0.0",
-    "agents": "^0.0.98",
+    "agents": "^0.30.0",
     "blakejs": "1.2.1",
     "hono": "^4.7.5",
     "tweetnacl": "1.0.3",
@@ -20,9 +21,9 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260305.0",
+    "@cloudflare/workers-types": "^5.20261023.1",
     "@types/node": "26.6.5",
     "typescript": "^5.8.2",
-    "wrangler": "^4.6.0"
+    "wrangler": "^4.152.0"
   }
 }

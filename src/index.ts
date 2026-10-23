@@ -15,7 +15,7 @@ export type OAuthProps = {
 // ---------------------------------------------------------------------------
 // MCP Agent — Durable Object that handles MCP protocol sessions
 // ---------------------------------------------------------------------------
-export class McpAgentDO extends McpAgent<Env, OAuthProps> {
+export class McpAgentDO extends McpAgent<Env, unknown, OAuthProps> {
   server = new McpServer({
     name: "mcpecrets",
     version: "0.1.0",
@@ -28,7 +28,7 @@ export class McpAgentDO extends McpAgent<Env, OAuthProps> {
   >();
 
   async init() {
-    const props = this.props as unknown as OAuthProps;
+    const props = this.props!;
     registerTools({
       props: {
         gitHubToken: props.gitHubToken,
