@@ -68,8 +68,10 @@ Secrets are encrypted at rest by GitHub and encrypted in transit with ephemeral 
 ## Continuous deployment
 
 Every push to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
-which type-checks and then runs `wrangler deploy`. A run whose commit is no longer the tip of
-`main` skips the deploy, so an older build never replaces a newer one. It needs two secrets:
+which type-checks and then runs `wrangler deploy`. Runs are serialized and each one checks out
+the current tip of `main` rather than the commit that triggered it, so the last run to execute
+deploys the newest `main` (including the vibe-badge commit pushed right after each merge, which
+triggers no run of its own) and an older build never replaces a newer one. It needs two secrets:
 
 | Secret | Value |
 |--------|-------|
