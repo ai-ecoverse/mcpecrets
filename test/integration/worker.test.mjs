@@ -1,6 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
+import { createServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +38,7 @@ async function githubMock(request) {
   ) {
     const body = await request.json();
     dispatches.push({ auth: request.headers.get("authorization"), body });
-    queueMicrotask(() => deliverSecret(body.inputs));
+    queueMicrotask(() => deliveries.push(deliverSecret(body.inputs)));
     return new Response(null, { status: 204 });
   }
   return new Response("unexpected outbound " + request.url, { status: 599 });
@@ -64,7 +65,7 @@ async function deliverSecret(inputs) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ encrypted }),
   });
-  deliveries.push(res.status);
+  return res.status;
 }
 
 const deliveries = [];
@@ -136,17 +137,29 @@ async function authorize() {
   return access_token;
 }
 
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
 before(async () => {
+  const port = await freePort();
   persist = mkdtempSync(join(tmpdir(), "mcpecrets-it-"));
   worker = await unstable_startWorker({
     config: "wrangler.jsonc",
     bindings: {
       GITHUB_CLIENT_ID: { type: "plain_text", value: "test-client" },
       GITHUB_CLIENT_SECRET: { type: "plain_text", value: "test-secret" },
-      WORKER_URL: { type: "plain_text", value: "http://worker.invalid" },
+      WORKER_URL: { type: "plain_text", value: `http://127.0.0.1:${port}` },
     },
     dev: {
-      server: { hostname: "127.0.0.1", port: 0 },
+      server: { hostname: "127.0.0.1", port },
       inspector: false,
       persist,
       outboundService: githubMock,
@@ -167,6 +180,29 @@ test("serves OAuth authorization server metadata", async () => {
   const meta = await res.json();
   assert.equal(meta.registration_endpoint, `${base}/register`);
   assert.equal(meta.token_endpoint, `${base}/token`);
+  assert.deepEqual(meta.protected_resources, [`${base}/mcp`]);
+  assert.deepEqual(meta.scopes_supported, ["read", "write"]);
+});
+
+test("serves protected resource metadata for the /mcp endpoint", async () => {
+  const res = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
+  assert.equal(res.status, 200);
+  const meta = await res.json();
+  assert.equal(meta.resource, `${base}/mcp`);
+  assert.deepEqual(meta.authorization_servers, [base]);
+  assert.deepEqual(meta.scopes_supported, ["read", "write"]);
+  assert.deepEqual(meta.bearer_methods_supported, ["header"]);
+  assert.equal(meta.resource_name, "mcpecrets");
+});
+
+test("rejects authorization requests from unknown clients without crashing", async () => {
+  const url = new URL(`${base}/authorize`);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", "unknown-client");
+  url.searchParams.set("redirect_uri", REDIRECT_URI);
+  const res = await fetch(url, { redirect: "manual" });
+  assert.equal(res.status, 400);
+  assert.match(await res.text(), /^Invalid OAuth request: /);
 });
 
 test("rejects unauthenticated MCP requests", async () => {
@@ -176,7 +212,10 @@ test("rejects unauthenticated MCP requests", async () => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
   });
   assert.equal(res.status, 401);
-  assert.match(res.headers.get("www-authenticate") ?? "", /^Bearer /);
+  const challenge = res.headers.get("www-authenticate") ?? "";
+  assert.match(challenge, /^Bearer /);
+  assert.match(challenge, new RegExp(`resource_metadata="${base}/\\.well-known/oauth-protected-resource/mcp"`));
+  assert.match(challenge, /scope="read write"/);
 });
 
 test("authenticated MCP session lists tools and round-trips get_secret through the Durable Object", async () => {
@@ -247,7 +286,7 @@ test("authenticated MCP session lists tools and round-trips get_secret through t
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].auth, `token ${GITHUB_TOKEN}`);
   assert.equal(dispatches[0].body.inputs.secret_name, "API_KEY");
-  assert.deepEqual(deliveries, [200]);
+  assert.deepEqual(await Promise.all(deliveries), [200]);
   assert.deepEqual(call.result.content, [{ type: "text", text: SECRET_VALUE }]);
 });
 
