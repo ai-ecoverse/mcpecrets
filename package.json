@@ -9,7 +9,7 @@
     "test:integration": "node --test 'test/integration/*.test.mjs'"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.10.0",
+    "@cloudflare/workers-oauth-provider": "^1.0.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@octokit/rest": "^22.0.0",
     "@stablelib/base64": "^2.0.0",
