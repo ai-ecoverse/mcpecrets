@@ -11,7 +11,7 @@
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.4",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/server": "2.4.0",
     "@octokit/rest": "^22.0.0",
     "@stablelib/base64": "^2.0.0",
     "agents": "^0.31.0",
