@@ -14,7 +14,7 @@
     "@modelcontextprotocol/server": "2.4.0",
     "@octokit/rest": "^22.0.0",
     "@stablelib/base64": "^2.0.0",
-    "agents": "^0.32.0",
+    "agents": "^0.33.0",
     "blakejs": "1.2.1",
     "hono": "^4.7.5",
     "tweetnacl": "1.0.3",
